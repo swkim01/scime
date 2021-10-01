@@ -117,9 +117,20 @@ def parse_mrecord(stream, offset, count, version=4):
         mrecord.append([noun, verb, cond, seq, talker, pos, remainder])
     return mrecord
 
-def parse_mtext(offset):
+def parse_mtext(file, offset, length):
     # text
-    mrecord=[[0, 0, 0, 0, 0, offset, 0]]
+    file.seek(offset, 0)
+    index = 0
+    start = 0
+    mrecord = []
+    mrecord.append([index, 0, 0, 0, 0, offset, 0])
+    for i in range(length-6):
+        d = file.read(1)
+        if d == b'\x00':
+            start = i + 1
+            index += 1
+            mrecord.append([index, 0, 0, 0, 0, offset+start, 0])
+    #mrecord=[[0, 0, 0, 0, 0, offset, 0]]
     return mrecord
 
 def readString(file):
@@ -235,7 +246,7 @@ def get_msgs_withmap(filemsg, resmap):
 
                     mrecord = parse_mrecord(stream, moffset, mheader[-1], version)
                 elif ord(mheader[0])&0xF == 0x3: # text
-                    mrecord = parse_mtext(moffset)
+                    mrecord = parse_mtext(stream, moffset, mheader[2])
 
                 parse_messages(stream, mrecord, encodings=['cp949', 'latin-1'])
 
