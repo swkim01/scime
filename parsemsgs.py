@@ -363,9 +363,9 @@ def save_msg(filename, sortmap, records):
                 file.write(msgbody)
 
             file.write(b'\x00')
-            # for last i/o access
-            for i in range(1024):
-                file.write(b'\x00')
+        # for last i/o access
+        for i in range(1024):
+            file.write(b'\x00')
 
         file.close()
     print("Saved messages OK!")
