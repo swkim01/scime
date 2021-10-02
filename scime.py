@@ -58,6 +58,7 @@ class SciEditorMainWindow(object):
         self.ui.transText.textChanged.connect(self.saveMsg)
         self.ui.closeEvent = self.closeEvent
 
+        self.rtype = None
         self.step = 6
 
     def resTypeActivated(self):
@@ -74,13 +75,13 @@ class SciEditorMainWindow(object):
         self.setTree()
 
     def save(self):
-        resmap, messages = parsemsgs.update_mapmsg(self.resmap, self.transres)
+        resmap, messages = parsemsgs.update_mapmsg(self.rtype, self.resmap, self.transres)
         sortmap = sorted(resmap.items(), key=(lambda x: int(x[1])))
         filemap = '/'.join((self.gamedir, "message2.map"))
-        parsemsgs.save_map(filemap, sortmap)
+        parsemsgs.save_map(filemap, self.rtype, sortmap)
 
         filemsg = '/'.join((self.gamedir, "resource2.msg"))
-        parsemsgs.save_msg(filemsg, sortmap, messages)
+        parsemsgs.save_msg(filemsg, self.rtype, sortmap, messages)
 
         self.ui.updateButton.setEnabled(True)
 
@@ -104,11 +105,21 @@ class SciEditorMainWindow(object):
         self.msgtreemodel.setItem(0, item1)
 
         # get original messages
-        self.res = parsemsgs.get_msgs_fromdir(self.gamedir)
+        # message type : text(sci0/sci1), message(sci1.1+)
+        rtype, self.res = parsemsgs.get_msgs_fromdir(self.gamedir)
 
         # get message map
         filemap = '/'.join((self.gamedir, game_map))
-        self.resmap = parsemsgs.parse_map(filemap, self.step)
+        mtype, self.resmap = parsemsgs.parse_map(filemap, self.step)
+        if rtype != None and mtype != None:
+            if rtype != mtype:
+                print("Orignal msgtype has not equal to trans msgtype!")
+                sys.exit(1)
+        elif rtype != None:
+            self.rtype = rtype
+        else:
+            self.rtype = mtype
+
         if self.resmap is None:
             sortmap=sorted(self.res.keys(), key=(lambda x: int(x)))
             #self.resmap = dict.fromkeys(sortmap, 0)
@@ -116,7 +127,6 @@ class SciEditorMainWindow(object):
 
         filemsg = '/'.join((self.gamedir, game_msg))
         self.transres = parsemsgs.get_msgs_withmap(filemsg, self.resmap)
-        #print(self.transres)
         if self.transres is None:
             print("transres is null!")
             self.transres = copy.deepcopy(self.res)

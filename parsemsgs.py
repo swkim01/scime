@@ -30,18 +30,19 @@ def parse_map(filemap, step=6):
                 if rtype == b'\xff':
                     break
 
-        offset = resources[0][1]
+        rtype = unpack('<B',resources[0][0])[0]
+        start = resources[0][1]
         end = resources[1][1]
-        count = int((end - offset)/step)
+        count = int((end - start)/step)
 
         if step == 5:
-            return {fields[0]: fields[1]<<1 for fields in (unpack('<HI', map[n:n+5]+b'\x00')
-                        for n in range(offset, end, 5))}
+            return (rtype, {fields[0]: fields[1]<<1 for fields in (unpack('<HI', map[n:n+5]+b'\x00')
+                        for n in range(start, end, 5))})
         else:
-            return {fields[0]: fields[1] for fields in (unpack('<HI', map[n:n+6])
-                        for n in range(offset, end, 6))}
+            return (rtype, {fields[0]: fields[1] for fields in (unpack('<HI', map[n:n+6])
+                        for n in range(start, end, 6))})
     except:
-        return None
+        return (None, None)
 
 def read_mheader(file):
     mid = int.from_bytes(file.read(2), "little")
@@ -69,7 +70,7 @@ def parse_mheader(file, offset, patchflag=True):
             mid, mpackedsize, munpackedsize, mcompress = read_mheader(file)
         else:                # case: original msg files
             dummy = file.read(1)
-            mid = os.path.basename(file.name).split('.')[0]
+            mid = int(os.path.basename(file.name).split('.')[0])
             mpackedsize = munpackedsize = mcompress = 0
 
     return [mtype, mid, mpackedsize, munpackedsize, mcompress]
@@ -121,16 +122,16 @@ def parse_mtext(file, offset, length):
     # text
     file.seek(offset, 0)
     index = 0
-    start = 0
+    start = offset
     mrecord = []
-    mrecord.append([index, 0, 0, 0, 0, offset, 0])
-    for i in range(length-6):
+    for i in range(length):
         d = file.read(1)
         if d == b'\x00':
-            start = i + 1
+            mrecord.append([index, 0, 0, 0, 0, start, 0])
+            start = offset + i + 1
             index += 1
-            mrecord.append([index, 0, 0, 0, 0, offset+start, 0])
-    #mrecord=[[0, 0, 0, 0, 0, offset, 0]]
+        elif d == b'': # end of file
+            mrecord.append([index, 0, 0, 0, 0, start, 0])
     return mrecord
 
 def readString(file):
@@ -194,11 +195,30 @@ def get_msgs_withkey(filename, name):
     except:
         return None
 
+def get_text_msgs(filename, name):
+    messages = {}
+    try:
+        with open(filename, 'rb') as file:
+
+            # parse message type, offset
+            length = os.path.getsize(filename)-2
+            offset = 0
+            mheader = parse_mheader(file, offset, patchflag=False)
+            mheader = mheader + parse_mheadertail(file, mheader, patchflag=False)
+            mrecord = parse_mtext(file, offset+2, length)
+            parse_messages(file, mrecord)
+            messages[name] = [mheader, mrecord]
+
+        return messages
+    except:
+        return None
+
 def get_msgs_fromdir(msg_dir):
     print("Getting original messages...")
 
     msg_dirs = os.listdir(msg_dir)
     records = {} #[]
+    rtype = None
     for record in sorted(msg_dirs):
         if record.endswith('.msg'): # and record is not 'resource.msg':
             # read record
@@ -209,10 +229,20 @@ def get_msgs_fromdir(msg_dir):
             messages = get_msgs_withkey(filename, name)
 
             records.update(messages)
+            rtype = 0xf
+
+        elif record.endswith('.tex'): # text
+            # read text
+            name = record.split('.')[0]
+            filename = '/'.join((msg_dir, record))
+            messages = get_text_msgs(filename, name)
+
+            records.update(messages)
+            rtype = 0x3
 
     if len(records) == 0:
-        return None
-    return records
+        return (None, None)
+    return (rtype, records)
 
 def get_msgs_withmap(filemsg, resmap):
     messages = {}
@@ -246,7 +276,7 @@ def get_msgs_withmap(filemsg, resmap):
 
                     mrecord = parse_mrecord(stream, moffset, mheader[-1], version)
                 elif ord(mheader[0])&0xF == 0x3: # text
-                    mrecord = parse_mtext(stream, moffset, mheader[2])
+                    mrecord = parse_mtext(stream, moffset, mheader[2]-6)
 
                 parse_messages(stream, mrecord, encodings=['cp949', 'latin-1'])
 
@@ -258,13 +288,13 @@ def get_msgs_withmap(filemsg, resmap):
         print('Except: get_msgs_withmap')
         return None
 
-def save_map(filename, resmap):
+def save_map(filename, rtype, resmap):
     print("Saving map...")
     with open(filename, 'wb') as file:
         #default map size = 6
         first = 6
         end = (len(resmap)+1)*6
-        file.write(0xf.to_bytes(1, byteorder='little'))
+        file.write(rtype.to_bytes(1, byteorder='little'))
         file.write(first.to_bytes(2, byteorder='little'))
         file.write(0xff.to_bytes(1, byteorder='little'))
         file.write(end.to_bytes(2, byteorder='little'))
@@ -276,7 +306,7 @@ def save_map(filename, resmap):
         file.close()
     print("Saved map OK!")
 
-def update_mapmsg(resmap, records):
+def update_mapmsg(rtype, resmap, records):
     outmap = {}
     outmsg = {}
     goffset = 0
@@ -291,11 +321,15 @@ def update_mapmsg(resmap, records):
             newrec = []
             newrec.append(header)
             newrec.append([])
-            version = (int.from_bytes(header[5], byteorder='little')&0xFFFF)//1000
-            if version == 3:
-                moffset = goffset + header[6] * 10 + 17 # v3: fileheader(9B), header(8B), records(10B)
+            #print("rtype:", rtype)
+            if rtype == 0x3:
+                moffset = goffset + 9
             else:
-                moffset = goffset + header[6] * 11 + 19 # v4: fileheader(9B), header(10B), records(11B)
+                version = (int.from_bytes(header[5], byteorder='little')&0xFFFF)//1000
+                if version == 3:
+                    moffset = goffset + header[6] * 10 + 17 # v3: fileheader(9B), header(8B), records(10B)
+                else:
+                    moffset = goffset + header[6] * 11 + 19 # v4: fileheader(9B), header(10B), records(11B)
             for j, msg in enumerate(msgs):
                 msg[5] = moffset
                 msgbody = try_encode_str(msg[7], encodings=['cp949', 'iso-8859-16'])
@@ -304,13 +338,16 @@ def update_mapmsg(resmap, records):
                 moffset += len(msgbody)
                 newrec[1].append(msg)
 
-            newrec[0][2] = newrec[0][3] = moffset - goffset
+            if rtype == 0x3:
+                newrec[0][2] = newrec[0][3] = moffset - goffset - 3
+            else:
+                newrec[0][2] = newrec[0][3] = moffset - goffset
             outmsg[str(mid)] = newrec
             goffset = moffset
 
     return (outmap, outmsg)
 
-def save_msg(filename, sortmap, records):
+def save_msg(filename, rtype, sortmap, records):
     print("Saving messages...")
     with open(filename, 'wb') as file:
         count = 0
@@ -330,30 +367,31 @@ def save_msg(filename, sortmap, records):
             #file.write(header[4].to_bytes(2, byteorder='little'))
             file.write(b'\x00\x00') # no compression
 
-            version = (int.from_bytes(header[5], byteorder='little')&0xFFFF)//1000
-            sizebyte = bytearray(header[5])
-            if version < 3 or version > 5:
-                sizebyte[0]=160
-                sizebyte[1]=15
-                sizebyte[2]=0
-                sizebyte[3]=0
-            file.write(sizebyte) # v3: 6B, v4: 8B
-            file.write(header[6].to_bytes(2, byteorder='little'))
+            if rtype == 0xf:
+                version = (int.from_bytes(header[5], byteorder='little')&0xFFFF)//1000
+                sizebyte = bytearray(header[5])
+                if version < 3 or version > 5:
+                    sizebyte[0]=160
+                    sizebyte[1]=15
+                    sizebyte[2]=0
+                    sizebyte[3]=0
+                file.write(sizebyte) # v3: 6B, v4: 8B
+                file.write(header[6].to_bytes(2, byteorder='little'))
 
-            for j, msg in enumerate(msgs):
-                # v3: record(10B): noun(1),verb(1),cond(1),seq(1),Talker(1),pos(2, realpos=offset+9(headerlen)+pos),remainder(3)
-                # v4: record(11B): noun(1),verb(1),cond(1),seq(1),Talker(1),pos(2, realpos=offset+9(headerlen)+pos),remainder(4)
-                file.write(msg[0])
-                file.write(msg[1])
-                file.write(msg[2])
-                file.write(msg[3])
-                file.write(msg[4])
-                file.write((msg[5]-offset-9).to_bytes(2, byteorder='little'))
+                for j, msg in enumerate(msgs):
+                    # v3: record(10B): noun(1),verb(1),cond(1),seq(1),Talker(1),pos(2, realpos=offset+9(headerlen)+pos),remainder(3)
+                    # v4: record(11B): noun(1),verb(1),cond(1),seq(1),Talker(1),pos(2, realpos=offset+9(headerlen)+pos),remainder(4)
+                    file.write(msg[0])
+                    file.write(msg[1])
+                    file.write(msg[2])
+                    file.write(msg[3])
+                    file.write(msg[4])
+                    file.write((msg[5]-offset-9).to_bytes(2, byteorder='little'))
 
-                if version == 3:
-                    file.write(msg[6].to_bytes(3, byteorder='little'))
-                else:
-                    file.write(msg[6].to_bytes(4, byteorder='little'))
+                    if version == 3:
+                        file.write(msg[6].to_bytes(3, byteorder='little'))
+                    else:
+                        file.write(msg[6].to_bytes(4, byteorder='little'))
 
             for j, msg in enumerate(msgs):
                 offset=msg[5]
