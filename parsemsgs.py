@@ -332,7 +332,7 @@ def update_mapmsg(rtype, resmap, records):
                     moffset = goffset + header[6] * 11 + 19 # v4: fileheader(9B), header(10B), records(11B)
             for j, msg in enumerate(msgs):
                 msg[5] = moffset
-                msgbody = try_encode_str(msg[7], encodings=['cp949', 'iso-8859-16'])
+                msgbody = try_encode_str(msg[7], encodings=['cp949', 'iso-8859-16', 'iso-8859-1'])
                 msgbody += b'\x00'
 
                 moffset += len(msgbody)
@@ -396,7 +396,7 @@ def save_msg(filename, rtype, sortmap, records):
             for j, msg in enumerate(msgs):
                 offset=msg[5]
                 file.seek(offset, 0)
-                msgbody = try_encode_str(msg[7], encodings=['cp949', 'iso-8859-16'])
+                msgbody = try_encode_str(msg[7], encodings=['cp949', 'iso-8859-16', 'iso-8859-1'])
                 msgbody += b'\x00'
                 file.write(msgbody)
 
